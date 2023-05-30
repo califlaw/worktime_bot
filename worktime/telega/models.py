@@ -28,3 +28,18 @@ class Worker(models.Model):
     class Meta:
         verbose_name = _('работник')
         verbose_name_plural = _('работники')
+
+    def __str__(self):
+        return self.name
+
+
+class Schedule(models.Model):
+    worker = models.ForeignKey(Worker, on_delete=models.CASCADE)
+    start_time = models.TimeField()
+    end_time = models.TimeField(null=True, blank=True)
+    period_time = models.DurationField(null=True, blank=True)
+    date = models.DateField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('смена')
+        verbose_name_plural = _('смены')

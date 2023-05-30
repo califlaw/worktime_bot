@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 import django
 from asgiref.sync import sync_to_async
@@ -9,30 +9,27 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "worktime.settings")
 django.setup()
 
 from aiogram import Bot, Dispatcher, types, executor
-from telega.models import Worker
+from telega.models import Worker, Schedule
 
-bot = Bot(token=os.getenv("TOKEN"))
+bot = Bot(token="")
+
 dp = Dispatcher(bot)
 
-MANAGER_CHAT_ID = os.getenv("MANAGER_ID")
+MANAGER_CHAT_ID = "6130285347"
+
 
 current_time = datetime.now().time().strftime("%H:%M")
 current_day = datetime.today().weekday()
 
 
 def calculate_time_difference(start_time, time_now):
-    start = datetime.strptime(start_time, '%H:%M').time()
     current = datetime.strptime(time_now, '%H:%M').time()
-    time_difference = timedelta(
-        hours=start.hour,
-        minutes=start.minute
-    ) - timedelta(
-        hours=current.hour,
-        minutes=current.minute
-    )
-    hours = time_difference.seconds // 3600
-    minutes = time_difference.seconds // 60
-    return f"{hours}:{minutes}"
+    difference = timedelta(hours=current.hour,
+                           minutes=current.minute) - timedelta(
+        hours=start_time.hour, minutes=start_time.minute)
+    hours = difference.seconds // 3600
+    minutes = (difference.seconds % 3600) // 60
+    return timedelta(hours=hours, minutes=minutes)
 
 
 async def send_access_denied_message(message: types.Message):
@@ -72,6 +69,16 @@ def make_worker_inactive(worker):
     worker.active = False
     worker.save()
     return worker
+
+
+@sync_to_async
+def get_schedule(worker):
+    return Schedule.objects.filter(worker=worker, date=date.today()).first()
+
+
+@sync_to_async
+def create_new_day(worker, start_time):
+    return Schedule.objects.create(worker=worker, start_time=start_time)
 
 
 async def send_work_start_notification(worker):
@@ -127,10 +134,15 @@ async def check_in(message: types.Message):
     username = message.chat.username
     worker = await get_worker_by_nickname(username)
     if worker:
-        await make_worker_active(worker)
-        await message.answer(
-            f"Ты начал в {starting_time}. Успешной работы!"
-        )
+        schedule = await get_schedule(worker)
+        if schedule:
+            await message.answer(f"Ты уже чекинился в {starting_time}")
+        else:
+            await create_new_day(worker=worker, start_time=starting_time)
+            await make_worker_active(worker)
+            await message.answer(
+                f"Ты начал в {starting_time}. Успешной работы!"
+            )
     else:
         await send_access_denied_message()
 
@@ -143,19 +155,32 @@ async def check_period(message: types.Message):
 @dp.message_handler(commands=["out"])
 async def check_out(message: types.Message):
     await process_check_time(message, is_checkout=True)
-    await message.answer(f"Смена закрыта. Хорошего отдыха!.")
 
 
 async def process_check_time(message: types.Message, is_checkout: bool):
     username = message.chat.username
     worker = await get_worker_by_nickname(username)
-    if worker:
-        period_time = calculate_time_difference(
-            start_time=starting_time, time_now=current_time
+    schedule = None
+    try:
+        schedule = await get_schedule(worker)
+        schedule.period_time = calculate_time_difference(
+            schedule.start_time, current_time
         )
+    except AttributeError:
+        await message.answer("Ты не открыл сегодня смену.")
+    if worker:
         if is_checkout:
+            schedule.end_time = current_time
+            await sync_to_async(schedule.save)()
             await make_worker_inactive(worker)
-        await message.answer(f"Ты проработал {period_time}ч.")
+            await message.answer(
+                            f"Смена закрыта в {schedule.end_time}."
+                            f"Вы отработали {schedule.period_time}ч."
+                        )
+        else:
+            await message.answer(
+                f"Вы отработали {schedule.period_time}ч."
+            )
     else:
         await send_access_denied_message()
 
